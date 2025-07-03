@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    container_name: qt_opengl_dev
+    tty: true
+    volumes:
+      # srcとdataディレクトリをマウント
+      - ./src:/app/src
+      - ./data:/app/data
+      # X11フォワーディングのためのソケットをマウント
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    working_dir: /app
+    environment:
+      - DISPLAY=$DISPLAY
+    # コンテナ起動時にビルドと実行を自動で行うコマンド
+    command: >
+      bash -c "
+        mkdir -p build &&
+        cd build &&
+        echo '--- Running CMake ---' &&
+        cmake ../src &&
+        echo '--- Running Make ---' &&
+        make -j$(nproc) &&
+        echo '--- Starting Application ---' &&
+        ./my_app
+      "
