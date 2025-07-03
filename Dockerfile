@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     libqt6opengl6-dev \
     libgl1-mesa-dev \
     libglu1-mesa-dev \
+    libxkbcommon-dev \
+    libvulkan-dev \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 

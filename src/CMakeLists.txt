@@ -12,11 +12,11 @@ set(CMAKE_AUTORCC ON)
 # Qt6の必要なモジュールを探す
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets)
 
-# happlyライブラリをサブディレクトリとして追加
-add_subdirectory(happly)
+# 実行ファイルを作成 (ソースファイルのパスを修正)
+add_executable(my_app main.cpp)
 
-# 実行ファイルを作成
-add_executable(my_app src/main.cpp)
+# happlyライブラリのヘッダファイルへのパスを追加
+target_include_directories(my_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/happly)
 
 # ライブラリをリンク
 target_link_libraries(my_app PRIVATE
@@ -24,5 +24,4 @@ target_link_libraries(my_app PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::OpenGLWidgets
-    happly
 )
