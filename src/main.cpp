@@ -20,9 +20,14 @@
 #include <QFormLayout>
 #include <QDoubleSpinBox>
 #include <QDialogButtonBox>
+#include <QPainter>
 #include <iostream>
 #include <vector>
 #include <QString>
+#include <map>
+#include <utility>
+#include <limits> // For std::numeric_limits
+#include <GL/glu.h> // For gluProject
 
 #include "happly.h"
 
@@ -32,26 +37,26 @@ class ConfigDialog : public QDialog
 public:
     ConfigDialog(const QVector3D& initialPos, const QVector3D& initialCenter, const QVector3D& initialUp, QWidget* parent = nullptr) : QDialog(parent)
     {
-        setWindowTitle("初期視点の設定");
+        setWindowTitle(QString::fromUtf8("初期視点の設定"));
         QFormLayout *formLayout = new QFormLayout(this);
 
         // カメラ位置
         pos_x = createSpinBox(); pos_y = createSpinBox(); pos_z = createSpinBox();
         QHBoxLayout* posLayout = new QHBoxLayout;
         posLayout->addWidget(pos_x); posLayout->addWidget(pos_y); posLayout->addWidget(pos_z);
-        formLayout->addRow("カメラ初期位置 (X, Y, Z):", posLayout);
+        formLayout->addRow(QString::fromUtf8("カメラ初期視点 (X, Y, Z):"), posLayout);
 
         // 注視点
         center_x = createSpinBox(); center_y = createSpinBox(); center_z = createSpinBox();
         QHBoxLayout* centerLayout = new QHBoxLayout;
         centerLayout->addWidget(center_x); centerLayout->addWidget(center_y); centerLayout->addWidget(center_z);
-        formLayout->addRow("注視点 初期位置 (X, Y, Z):", centerLayout);
+        formLayout->addRow(QString::fromUtf8("注視点 (X, Y, Z):"), centerLayout);
 
         // Upベクトル
         up_x = createSpinBox(); up_y = createSpinBox(); up_z = createSpinBox();
         QHBoxLayout* upLayout = new QHBoxLayout;
         upLayout->addWidget(up_x); upLayout->addWidget(up_y); upLayout->addWidget(up_z);
-        formLayout->addRow("Upベクトル (X, Y, Z):", upLayout);
+        formLayout->addRow(QString::fromUtf8("Upベクトル (X, Y, Z):"), upLayout);
 
         // 値を設定
         pos_x->setValue(initialPos.x()); pos_y->setValue(initialPos.y()); pos_z->setValue(initialPos.z());
@@ -91,6 +96,94 @@ struct Point {
     unsigned int u, v; // u, v座標を追加
 };
 
+// クリックイベントを処理するカスタム画像ラベル
+class ImageLabel : public QLabel
+{
+    Q_OBJECT
+
+public:
+    using QLabel::QLabel;
+
+    // 元の(リサイズされていない)ピクスマップをセットするスロット
+    void setOriginalPixmap(const QPixmap& pixmap) {
+        originalPixmap = pixmap;
+        // テキストをクリアし、再描画をトリガー
+        setText("");
+        update();
+    }
+
+signals:
+    void clickedPixel(int u, int v);
+
+protected:
+    // paintEventをオーバーライドして、スケーリングと描画を自前で行う
+    void paintEvent(QPaintEvent *event) override {
+        if (originalPixmap.isNull()) {
+            // ピクスマップがなければ、QLabelのデフォルトの描画（テキスト表示など）を行う
+            QLabel::paintEvent(event);
+            return;
+        }
+
+        QPainter painter(this);
+        QRect targetRect = this->rect(); // ラベルの現在の描画領域
+        // アスペクト比を維持してスケーリング
+        QPixmap scaledPixmap = originalPixmap.scaled(targetRect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+        // 中央に描画するためのオフセットを計算
+        int x = (targetRect.width() - scaledPixmap.width()) / 2;
+        int y = (targetRect.height() - scaledPixmap.height()) / 2;
+        painter.drawPixmap(x, y, scaledPixmap);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override {
+        if (originalPixmap.isNull()) {
+            QLabel::mousePressEvent(event);
+            return;
+        }
+
+        int widgetWidth = this->width();
+        int widgetHeight = this->height();
+        int pixmapWidth = originalPixmap.width(); // 元の画像の幅
+        int pixmapHeight = originalPixmap.height(); // 元の画像の高さ
+
+        if (pixmapWidth <= 0 || pixmapHeight <= 0) return;
+
+        // 正しいリサイズ比を計算
+        double wRatio = (double)widgetWidth / pixmapWidth;
+        double hRatio = (double)widgetHeight / pixmapHeight;
+        double ratio = std::min(wRatio, hRatio);
+        int scaledWidth = pixmapWidth * ratio;
+        int scaledHeight = pixmapHeight * ratio;
+
+        // 中央配置によるオフセットを計算
+        int offsetX = (widgetWidth - scaledWidth) / 2;
+        int offsetY = (widgetHeight - scaledHeight) / 2;
+
+        QPoint clickPos = event->pos();
+
+        // クリック位置が画像の内側か判定
+        if (clickPos.x() >= offsetX && clickPos.x() < (offsetX + scaledWidth) &&
+            clickPos.y() >= offsetY && clickPos.y() < (offsetY + scaledHeight))
+        {
+            // オフセットを引いて、スケールされた画像上の相対座標を計算
+            int relativeX = clickPos.x() - offsetX;
+            int relativeY = clickPos.y() - offsetY;
+
+            // リサイズ比で割って、元の画像の座標(u,v)に変換
+            int u = (int)(relativeX / ratio);
+            int v = (int)(relativeY / ratio); // V座標の反転を削除
+
+            emit clickedPixel(u, v);
+        }
+
+        QLabel::mousePressEvent(event);
+    }
+
+private:
+    QPixmap originalPixmap;
+};
+
+
 class PointCloudWidget; // 前方宣言
 
 // 視点コントロールパネル
@@ -100,16 +193,16 @@ class ViewControlPanel : public QWidget
 
 public:
     ViewControlPanel(QWidget *parent = nullptr) : QWidget(parent) {
-        QPushButton *frontButton = new QPushButton("正面");
-        QPushButton *rightButton = new QPushButton("右");
-        QPushButton *topButton = new QPushButton("上");
+        QPushButton *frontButton = new QPushButton(QString::fromUtf8("正面"));
+        QPushButton *rightButton = new QPushButton(QString::fromUtf8("右"));
+        QPushButton *topButton = new QPushButton(QString::fromUtf8("上"));
 
-        QPushButton *yawLeftButton = new QPushButton("Yaw ◀");
-        QPushButton *yawRightButton = new QPushButton("Yaw ▶");
-        QPushButton *pitchUpButton = new QPushButton("Pitch ⏶");
-        QPushButton *pitchDownButton = new QPushButton("Pitch ⏷");
-        QPushButton *rollLeftButton = new QPushButton("Roll ⤿");
-        QPushButton *rollRightButton = new QPushButton("Roll ⤾");
+        QPushButton *yawLeftButton = new QPushButton(QString::fromUtf8("ヨー ◀"));
+        QPushButton *yawRightButton = new QPushButton(QString::fromUtf8("ヨー ▶"));
+        QPushButton *pitchUpButton = new QPushButton(QString::fromUtf8("ピッチ ⏶"));
+        QPushButton *pitchDownButton = new QPushButton(QString::fromUtf8("ピッチ ⏷"));
+        QPushButton *rollLeftButton = new QPushButton(QString::fromUtf8("ロール ⤿"));
+        QPushButton *rollRightButton = new QPushButton(QString::fromUtf8("ロール ⤾"));
 
         QGridLayout *layout = new QGridLayout(this);
         // Direct views
@@ -192,6 +285,7 @@ public:
             } catch (const std::exception&) {}
 
             points.clear();
+            uv_map.clear();
             for (size_t i = 0; i < x.size(); ++i) {
                 Point p;
                 p.x = static_cast<float>(x[i]);
@@ -200,8 +294,14 @@ public:
                 p.r = hasColor ? r[i] : 255;
                 p.g = hasColor ? g[i] : 255;
                 p.b = hasColor ? b[i] : 255;
-                p.u = hasUV ? u[i] : 0;
-                p.v = hasUV ? v[i] : 0;
+                if (hasUV) {
+                    p.u = u[i];
+                    p.v = v[i];
+                    uv_map[{p.u, p.v}] = i;
+                } else {
+                    p.u = 0;
+                    p.v = 0;
+                }
                 points.push_back(p);
             }
             update();
@@ -211,6 +311,54 @@ public:
     }
 
 public slots:
+    void findAndHighlightPoint(int u, int v) {
+        size_t point_idx = -1;
+        bool exact_match = false;
+
+        // 1. 高速な完全一致を試みる
+        auto it = uv_map.find({(unsigned int)u, (unsigned int)v});
+        if (it != uv_map.end()) {
+            point_idx = it->second;
+            exact_match = true;
+        }
+        // 2. 完全一致がなければ、最近傍点を検索する
+        else if (!points.empty()) {
+            std::cout << "No exact match for (" << u << ", " << v << "). Searching for nearest point..." << std::endl;
+            double min_dist_sq = std::numeric_limits<double>::max();
+
+            for (size_t i = 0; i < points.size(); ++i) {
+                const auto& p = points[i];
+                double du = (double)p.u - u;
+                double dv = (double)p.v - v;
+                double dist_sq = du * du + dv * dv;
+                if (dist_sq < min_dist_sq) {
+                    min_dist_sq = dist_sq;
+                    point_idx = i;
+                }
+            }
+        }
+
+        // 3. 点が見つかった場合（完全一致または最近傍）
+        if (point_idx != -1) {
+            const auto& foundPoint = points[point_idx];
+            lineTargetPoint = QVector3D(foundPoint.x, foundPoint.y, foundPoint.z);
+            lineStartPoint = initialCameraPosition; // 原点
+            lineDistance = lineStartPoint.distanceToPoint(lineTargetPoint);
+            isLineActive = true;
+            if (exact_match) {
+                 std::cout << "Point found at (" << u << ", " << v << ")." << std::endl;
+            } else {
+                 std::cout << "Nearest point found at (" << foundPoint.u << ", " << foundPoint.v << ")." << std::endl;
+            }
+        }
+        // 4. 点群が空の場合
+        else {
+            isLineActive = false;
+            std::cout << "No points loaded to search." << std::endl;
+        }
+        emit lineDistanceCalculated(isLineActive ? lineDistance : -1.0f);
+        requestUpdate();
+    }
     void resetView() {
         cameraPosition = initialCameraPosition;
         viewCenter = initialViewCenter;
@@ -218,9 +366,9 @@ public slots:
         requestUpdate();
     }
     void setFrontView() {
-        float distance = cameraPosition.distanceToPoint(viewCenter);
-        cameraPosition = viewCenter + QVector3D(0, 0, distance);
-        upVector = QVector3D(0, 1, 0);
+        cameraPosition = QVector3D(0, 0, 0);
+        viewCenter = QVector3D(0, 1, 100);
+        upVector = QVector3D(0, -1, 0);
         requestUpdate();
     }
     void setRightView() {
@@ -260,6 +408,7 @@ public slots:
 
 signals:
     void cameraChanged(const QVector3D& pos, const QVector3D& center, const QVector3D& up);
+    void lineDistanceCalculated(float distance);
 
 protected:
     void initializeGL() override {
@@ -292,6 +441,33 @@ protected:
             glVertex3f(p.x, p.y, p.z);
         }
         glEnd();
+
+        if (isLineActive) {
+            drawHighlightLine();
+        }
+
+        // --- QPainterを使って2Dオーバーレイテキストを描画 ---
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+
+        if (isLineActive) {
+            GLdouble modelview[16], projection_matrix[16];
+            GLint viewport[4];
+            glGetDoublev(GL_MODELVIEW_MATRIX, modelview);
+            glGetDoublev(GL_PROJECTION_MATRIX, projection_matrix);
+            glGetIntegerv(GL_VIEWPORT, viewport);
+
+            QVector3D textPos = (lineStartPoint + lineTargetPoint) / 2.0f;
+            GLdouble winX, winY, winZ;
+            if (gluProject(textPos.x(), textPos.y(), textPos.z(), modelview, projection_matrix, viewport, &winX, &winY, &winZ) == GL_TRUE)
+            {
+                painter.setPen(Qt::white);
+                painter.setFont(QFont("Noto Sans", 10));
+                QString distanceText = QString::number(lineDistance, 'f', 2) + " m";
+                painter.drawText(QPointF(winX + 5, viewport[3] - winY - 5), distanceText);
+            }
+        }
+        painter.end();
     }
 
     void wheelEvent(QWheelEvent *event) override {
@@ -330,18 +506,43 @@ protected:
             QVector3D rightDirection = QVector3D::crossProduct(viewDirection, upVector).normalized();
             rotationMatrix.rotate(-dy * rotationSpeed, rightDirection);
             cameraPosition = viewCenter + rotationMatrix.map(cameraPosition - viewCenter);
+        } else if (event->buttons() & Qt::MiddleButton) {
+            float panSpeed = 0.002f * cameraPosition.distanceToPoint(viewCenter);
+            QVector3D viewDirection = (viewCenter - cameraPosition).normalized();
+            QVector3D rightDirection = QVector3D::crossProduct(viewDirection, upVector).normalized();
+            QVector3D actualUpDirection = QVector3D::crossProduct(rightDirection, viewDirection).normalized();
+            viewCenter -= (rightDirection * dx * panSpeed);
+            viewCenter += (actualUpDirection * dy * panSpeed);
         }
         lastPos = event->pos();
         requestUpdate();
     }
 
 private:
+    void drawHighlightLine() {
+        glColor3f(1.0f, 1.0f, 0.0f); // Yellow
+        glLineWidth(3.0f);
+
+        // 線を描画
+        glBegin(GL_LINES);
+        glVertex3f(lineStartPoint.x(), lineStartPoint.y(), lineStartPoint.z());
+        glVertex3f(lineTargetPoint.x(), lineTargetPoint.y(), lineTargetPoint.z());
+        glEnd();
+
+        glLineWidth(1.0f);
+    }
+
     void requestUpdate() {
         update();
         emit cameraChanged(cameraPosition, viewCenter, upVector);
     }
 
     std::vector<Point> points;
+    std::map<std::pair<unsigned int, unsigned int>, size_t> uv_map;
+    bool isLineActive = false;
+    QVector3D lineStartPoint;
+    QVector3D lineTargetPoint;
+    float lineDistance = 0.0f;
     QVector3D cameraPosition;
     QVector3D viewCenter;
     QVector3D upVector;
@@ -369,9 +570,9 @@ public:
         setCentralWidget(centralWidget);
         QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
         QHBoxLayout *buttonLayout = new QHBoxLayout;
-        QPushButton *loadImageButton = new QPushButton("画像を開く...");
-        QPushButton *loadPlyButton = new QPushButton("点群(PLY)を開く...");
-        QPushButton *resetViewButton = new QPushButton("視点をリセット");
+        QPushButton *loadImageButton = new QPushButton(QString::fromUtf8("画像を開く..."));
+        QPushButton *loadPlyButton = new QPushButton(QString::fromUtf8("点群(PLY)を開く..."));
+        QPushButton *resetViewButton = new QPushButton(QString::fromUtf8("視点をリセット"));
         buttonLayout->addWidget(loadImageButton);
         buttonLayout->addWidget(loadPlyButton);
         buttonLayout->addStretch();
@@ -379,7 +580,7 @@ public:
         mainLayout->addLayout(buttonLayout);
         QSplitter *splitter = new QSplitter(this);
         mainLayout->addWidget(splitter);
-        imageLabel = new QLabel("「画像を開く...」ボタンでファイルを選択してください。");
+        imageLabel = new ImageLabel(QString::fromUtf8("「画像を開く...」ボタンでファイルを選択してください。"));
         imageLabel->setAlignment(Qt::AlignCenter);
         splitter->addWidget(imageLabel);
 
@@ -396,9 +597,16 @@ public:
         cameraInfoLabel->setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 5px; border-radius: 3px;");
         cameraInfoLabel->setAlignment(Qt::AlignRight);
 
+        // 距離情報表示ラベル
+        lineDistanceLabel = new QLabel;
+        lineDistanceLabel->setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 5px; border-radius: 3px;");
+        lineDistanceLabel->setAlignment(Qt::AlignLeft);
+        lineDistanceLabel->hide(); // 最初は非表示
+
         pointCloudLayout->addWidget(pointCloudWidget, 0, 0);
         pointCloudLayout->addWidget(viewPanel, 0, 0, Qt::AlignTop | Qt::AlignRight);
         pointCloudLayout->addWidget(cameraInfoLabel, 0, 0, Qt::AlignBottom | Qt::AlignRight); // 右下に配置
+        pointCloudLayout->addWidget(lineDistanceLabel, 0, 0, Qt::AlignBottom | Qt::AlignLeft); // 左下に配置
         splitter->addWidget(pointCloudContainer);
 
         splitter->setSizes({400, 600});
@@ -408,6 +616,7 @@ public:
         connect(resetViewButton, &QPushButton::clicked, pointCloudWidget, &PointCloudWidget::resetView);
 
         // --- シグナル/スロット接続 ---
+        connect(imageLabel, &ImageLabel::clickedPixel, pointCloudWidget, &PointCloudWidget::findAndHighlightPoint);
         connect(viewPanel, &ViewControlPanel::frontViewRequested, pointCloudWidget, &PointCloudWidget::setFrontView);
         connect(viewPanel, &ViewControlPanel::rightViewRequested, pointCloudWidget, &PointCloudWidget::setRightView);
         connect(viewPanel, &ViewControlPanel::topViewRequested, pointCloudWidget, &PointCloudWidget::setTopView);
@@ -418,6 +627,7 @@ public:
         // カメラ位置が変更されたらウィンドウタイトルと情報ラベルを更新
         connect(pointCloudWidget, &PointCloudWidget::cameraChanged, this, &MainWindow::updateWindowTitle);
         connect(pointCloudWidget, &PointCloudWidget::cameraChanged, this, &MainWindow::updateCameraInfoLabel);
+        connect(pointCloudWidget, &PointCloudWidget::lineDistanceCalculated, this, &MainWindow::updateLineDistanceLabel);
 
         resize(1000, 650);
         updateWindowTitle(initialCameraPosition, initialViewCenter, initialUpVector); // 初回タイトル設定
@@ -426,13 +636,13 @@ public:
 
 private:
     void setupMenuBar() {
-        QMenu *fileMenu = menuBar()->addMenu("ファイル");
-        QAction *exitAction = new QAction("終了", this);
+        QMenu *fileMenu = menuBar()->addMenu(QString::fromUtf8("ファイル"));
+        QAction *exitAction = new QAction(QString::fromUtf8("終了"), this);
         connect(exitAction, &QAction::triggered, qApp, &QApplication::quit);
         fileMenu->addAction(exitAction);
 
-        QMenu *settingsMenu = menuBar()->addMenu("設定");
-        QAction *configAction = new QAction("初期視点を設定...", this);
+        QMenu *settingsMenu = menuBar()->addMenu(QString::fromUtf8("設定"));
+        QAction *configAction = new QAction(QString::fromUtf8("初期視点を設定..."), this);
         connect(configAction, &QAction::triggered, this, &MainWindow::openConfigDialog);
         settingsMenu->addAction(configAction);
     }
@@ -450,26 +660,26 @@ private slots:
     }
 
     void loadImage() {
-        QString filePath = QFileDialog::getOpenFileName(this, "画像ファイルを開く", "/app/data", "画像ファイル (*.png *.jpg *.jpeg *.bmp)");
+        QString filePath = QFileDialog::getOpenFileName(this, QString::fromUtf8("画像ファイルを開く"), QDir::homePath(), QString::fromUtf8("画像ファイル (*.png *.jpg *.jpeg *.bmp)"));
         if (!filePath.isEmpty()) {
             QPixmap pixmap(filePath);
             if(pixmap.isNull()){
-                imageLabel->setText("エラー: 画像を読み込めませんでした。");
+                imageLabel->setText(QString::fromUtf8("エラー: 画像を読み込めませんでした。"));
             } else {
-                imageLabel->setPixmap(pixmap.scaled(imageLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                imageLabel->setOriginalPixmap(pixmap);
             }
         }
     }
 
     void loadPointCloud() {
-        QString filePath = QFileDialog::getOpenFileName(this, "PLYファイルを開く", "/app/data", "PLYファイル (*.ply)");
+        QString filePath = QFileDialog::getOpenFileName(this, QString::fromUtf8("PLYファイルを開く"), QDir::homePath(), QString::fromUtf8("PLYファイル (*.ply)"));
         if (!filePath.isEmpty()) {
             pointCloudWidget->loadPly(filePath.toStdString());
         }
     }
 
     void updateWindowTitle(const QVector3D& pos, const QVector3D& center, const QVector3D& up) {
-        QString title = QString("カメラ位置: (%1, %2, %3) | 注視点: (%4, %5, %6) | Up: (%7, %8, %9)")
+        QString title = QString::fromUtf8("カメラ位置: (%1, %2, %3) | 注視点: (%4, %5, %6) | Up: (%7, %8, %9)")
             .arg(pos.x(), 0, 'f', 1)
             .arg(pos.y(), 0, 'f', 1)
             .arg(pos.z(), 0, 'f', 1)
@@ -483,7 +693,7 @@ private slots:
     }
 
     void updateCameraInfoLabel(const QVector3D& pos, const QVector3D& center, const QVector3D& up) {
-        QString text = QString("Pos: (%1, %2, %3)\nCenter: (%4, %5, %6)\nUp: (%7, %8, %9)")
+        QString text = QString::fromUtf8("位置: (%1, %2, %3)\n注視点: (%4, %5, %6)\nUp: (%7, %8, %9)")
             .arg(pos.x(), 0, 'f', 1)
             .arg(pos.y(), 0, 'f', 1)
             .arg(pos.z(), 0, 'f', 1)
@@ -496,10 +706,20 @@ private slots:
         cameraInfoLabel->setText(text);
     }
 
+    void updateLineDistanceLabel(float distance) {
+        if (distance >= 0) {
+            lineDistanceLabel->setText(QString::fromUtf8("選択距離: %1 m").arg(distance, 0, 'f', 2));
+            lineDistanceLabel->show();
+        } else {
+            lineDistanceLabel->hide();
+        }
+    }
+
 private:
-    QLabel *imageLabel;
+    ImageLabel *imageLabel;
     PointCloudWidget *pointCloudWidget;
     QLabel *cameraInfoLabel; // 情報表示用ラベル
+    QLabel *lineDistanceLabel; // 距離表示用ラベル
     QVector3D initialCameraPosition;
     QVector3D initialViewCenter;
     QVector3D initialUpVector;

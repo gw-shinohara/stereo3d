@@ -9,8 +9,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-# Qt6の必要なモジュールを探す
+# 必要なパッケージを探す
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets)
+find_package(OpenGL REQUIRED) # OpenGLパッケージ(GLUを含む)を探す
 
 # 実行ファイルを作成 (ソースファイルのパスを修正)
 add_executable(my_app main.cpp)
@@ -24,4 +25,5 @@ target_link_libraries(my_app PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::OpenGLWidgets
+    OpenGL::GLU
 )
